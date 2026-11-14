@@ -1,0 +1,195 @@
+name: FastAPI Docker CI/CD
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Testar API e imagem Docker
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+
+      - name: Instalar dependencias e executar testes
+        run: |
+          python -m pip install -r requirements-dev.txt
+          python -m pip check
+          python -m unittest discover -s tests -v
+
+      - name: Criar imagem Docker
+        run: |
+          docker build --label "org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY" --label "org.opencontainers.image.revision=$GITHUB_SHA" -t api-restful-fastapi:ci .
+
+      - name: Testar container com a colecao Postman
+        run: |
+          docker run --rm -d --name fastapi-ci -p 127.0.0.1:8000:8000 api-restful-fastapi:ci
+          trap 'docker logs fastapi-ci; docker stop fastapi-ci >/dev/null 2>&1 || true' EXIT
+          curl --fail --silent --show-error --retry 10 --retry-connrefused --retry-delay 1 http://127.0.0.1:8000/api/mensagens > /dev/null
+          npx --yes newman@6.2.3 run postman/messages-api.postman_collection.json --env-var baseUrl=http://127.0.0.1:8000 --reporters cli,junit --reporter-junit-export reports/postman-docker.xml --timeout-request 15000
+
+      - name: Salvar resultado dos testes
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: postman-docker
+          path: reports/postman-docker.xml
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Salvar imagem testada
+        run: |
+          set -o pipefail
+          docker save api-restful-fastapi:ci | gzip > image.tar.gz
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fastapi-image
+          path: image.tar.gz
+          if-no-files-found: error
+          retention-days: 1
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: postman-collection
+          path: postman/messages-api.postman_collection.json
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: Publicar imagem no GHCR
+    needs: test
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image: ${{ steps.publish.outputs.image }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: fastapi-image
+
+      - name: Carregar imagem testada
+        run: docker load --input image.tar.gz
+
+      - name: Autenticar no GHCR
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: echo "$GHCR_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+
+      - name: Publicar imagem
+        id: publish
+        run: |
+          image="ghcr.io/${GITHUB_REPOSITORY,,}"
+          docker tag api-restful-fastapi:ci "$image:$GITHUB_SHA"
+          docker tag api-restful-fastapi:ci "$image:latest"
+          docker push "$image:$GITHUB_SHA"
+          docker push "$image:latest"
+          echo "image=$image:$GITHUB_SHA" >> "$GITHUB_OUTPUT"
+
+  deploy:
+    name: Publicar e testar no Azure
+    needs: publish
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && vars.AZURE_WEBAPP_NAME != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      id-token: write
+    concurrency:
+      group: fastapi-azure-production
+      cancel-in-progress: false
+    env:
+      AZURE_WEBAPP_NAME: ${{ vars.AZURE_WEBAPP_NAME }}
+      IMAGE: ${{ needs.publish.outputs.image }}
+    steps:
+      - name: Conferir acesso publico a imagem
+        run: |
+          if ! docker manifest inspect "$IMAGE" > /dev/null; then
+            echo '::error::Configure a visibilidade do pacote api-restful-fastapi no GHCR como Public.'
+            exit 1
+          fi
+
+      - name: Autenticar no Azure
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Configurar porta do container
+        run: |
+          resource_group=$(az webapp list --query "[?name=='$AZURE_WEBAPP_NAME'].resourceGroup | [0]" --output tsv)
+          if [ -z "$resource_group" ]; then
+            echo '::error::App Service nao encontrado na assinatura configurada.'
+            exit 1
+          fi
+          az webapp config appsettings set --name "$AZURE_WEBAPP_NAME" --resource-group "$resource_group" --settings WEBSITES_PORT=8000 WEBSITES_ENABLE_APP_SERVICE_STORAGE=false --output none
+          az webapp config set --name "$AZURE_WEBAPP_NAME" --resource-group "$resource_group" --startup-file "" --output none
+
+      - name: Fazer deploy da imagem
+        id: deploy
+        uses: azure/webapps-deploy@v3
+        with:
+          app-name: ${{ env.AZURE_WEBAPP_NAME }}
+          images: ${{ env.IMAGE }}
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: postman-collection
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+
+      - name: Aguardar API e executar colecao Postman
+        env:
+          WEBAPP_URL: ${{ steps.deploy.outputs.webapp-url }}
+        run: |
+          base_url="${WEBAPP_URL%/}"
+          ready=false
+          for attempt in $(seq 1 24); do
+            if curl --fail --silent --show-error --max-time 15 "$base_url/api/mensagens" > /dev/null; then
+              ready=true
+              break
+            fi
+            sleep 10
+          done
+          if [ "$ready" != true ]; then
+            echo '::error::A API nao respondeu apos o deploy.'
+            exit 1
+          fi
+          npx --yes newman@6.2.3 run messages-api.postman_collection.json --env-var "baseUrl=$base_url" --reporters cli,junit --reporter-junit-export reports/postman-azure.xml --timeout-request 30000
+
+      - name: Salvar resultado no Azure
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: postman-azure
+          path: reports/postman-azure.xml
+          if-no-files-found: ignore
+          retention-days: 7
