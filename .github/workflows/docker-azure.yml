@@ -46,7 +46,7 @@ jobs:
         run: |
           docker run --rm -d --name fastapi-ci -p 127.0.0.1:8000:8000 api-restful-fastapi:ci
           trap 'docker logs fastapi-ci; docker stop fastapi-ci >/dev/null 2>&1 || true' EXIT
-          curl --fail --silent --show-error --retry 10 --retry-connrefused --retry-delay 1 http://127.0.0.1:8000/api/mensagens > /dev/null
+          curl --fail --silent --show-error --retry 10 --retry-all-errors --retry-delay 1 --max-time 5 http://127.0.0.1:8000/api/mensagens > /dev/null
           npx --yes newman@6.2.3 run postman/messages-api.postman_collection.json --env-var baseUrl=http://127.0.0.1:8000 --reporters cli,junit --reporter-junit-export reports/postman-docker.xml --timeout-request 15000
 
       - name: Salvar resultado dos testes
