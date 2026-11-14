@@ -45,7 +45,7 @@ python -m venv .venv
 .\.venv\Scripts\python.exe -m unittest discover -s tests -v
 ```
 
-No Postman, importe [a coleção](postman/messages-api.postman_collection.json) e execute **Run collection**. A variável `baseUrl` aponta para `http://127.0.0.1:8000`.
+No Postman, importe [a coleção](postman/messages-api.postman_collection.json) e execute **Run collection**. A variável `baseUrl` aponta para a API no Azure; para testar o container local, troque por `http://127.0.0.1:8000`.
 
 ## Deploy
 
