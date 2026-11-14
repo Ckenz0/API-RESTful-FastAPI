@@ -2,7 +2,7 @@
 
 API de mensagens com Python 3.12, FastAPI e Docker. Permite criar, listar, consultar, atualizar e excluir mensagens, com respostas em JSON.
 
-[Azure](https://api-restful-fastapi-dcfcaqgxc4duf0gd.brazilsouth-01.azurewebsites.net/docs) · [Coleção do Postman](postman/messages-api.postman_collection.json)
+[Azure](https://api-restful-fastapi-dcfcaqgxc4duf0gd.brazilsouth-01.azurewebsites.net/docs) · [Coleção do Postman](https://www.postman.com/cauekenzo12-6336369/workspace/api-restful-fastapi/collection/53711331-2bd99cd4-632b-4fa5-bcc7-d2ed102d246a)
 
 ## Docker
 
@@ -45,7 +45,7 @@ python -m venv .venv
 .\.venv\Scripts\python.exe -m unittest discover -s tests -v
 ```
 
-No Postman, importe [a coleção](postman/messages-api.postman_collection.json) e execute **Run collection**. A variável `baseUrl` aponta para a API no Azure; para testar o container local, troque por `http://127.0.0.1:8000`.
+No Postman, abra [a coleção](https://www.postman.com/cauekenzo12-6336369/workspace/api-restful-fastapi/collection/53711331-2bd99cd4-632b-4fa5-bcc7-d2ed102d246a) e execute **Run collection**. A variável `baseUrl` aponta para a API no Azure; para testar o container local, troque por `http://127.0.0.1:8000`. O arquivo JSON também está na pasta `postman`.
 
 ## Deploy
 
